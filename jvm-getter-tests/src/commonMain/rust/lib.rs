@@ -3,9 +3,11 @@
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 
-use jni::JNIEnv;
-use jni::objects::{JClass, JValue, JValueGen};
+use jni::objects::{JClass, JString, JValue};
+use jni::strings::JNIString;
 use jni::sys::{JNI_OK, JavaVM};
+use jni::{Env, jni_sig, jni_str};
+use uniffi::deps::anyhow;
 
 #[uniffi::export]
 pub fn find_jni_get_created_java_vms() -> u64 {
@@ -24,21 +26,27 @@ pub fn get_java_vm() -> u64 {
 #[uniffi::export]
 pub fn get_simple_object_field_value_without_jni_on_load() -> Option<String> {
     let java_vm = unsafe { get_java_vm_impl()? };
-    let java_vm = unsafe { jni::JavaVM::from_raw(java_vm).ok()? };
-    let mut env = java_vm.attach_current_thread_as_daemon().ok()?;
-
-    #[allow(non_snake_case)]
-    let SimpleObject = find_class_via_env(&mut env, "dev/gobley/jvmgetter/tests/SimpleObject")?;
-    #[allow(non_snake_case)]
-    let simple_value = env
-        .get_static_field(SimpleObject, "simpleValue", "Ljava/lang/String;")
-        .ok()?;
-    let JValueGen::Object(simple_value) = simple_value else {
-        return None;
-    };
-    let simple_value = simple_value.into();
-    let simple_value = env.get_string(&simple_value).ok()?;
-    Some(simple_value.to_string_lossy().to_string())
+    let java_vm = unsafe { jni::JavaVM::from_raw(java_vm) };
+    java_vm
+        .attach_current_thread(|mut env| {
+            #[allow(non_snake_case)]
+            let Some(SimpleObject) =
+                find_class_via_env(&mut env, "dev/gobley/jvmgetter/tests/SimpleObject")
+            else {
+                anyhow::bail!("SimpleObject not found");
+            };
+            #[allow(non_snake_case)]
+            let simple_value = env
+                .get_static_field(
+                    SimpleObject,
+                    jni_str!("simpleValue"),
+                    jni_sig!("Ljava/lang/String;"),
+                )?
+                .l()?;
+            let simple_value = JString::cast_local(env, simple_value)?;
+            Ok(simple_value.to_string())
+        })
+        .ok()
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -68,8 +76,8 @@ pub async fn get_simple_object_field_value_without_jni_on_load_from_rust_thread(
     value
 }
 
-fn find_class_via_env<'a>(env: &mut JNIEnv<'a>, class_name: &str) -> Option<JClass<'a>> {
-    if let Ok(class) = env.find_class(class_name) {
+fn find_class_via_env<'a>(env: &mut Env<'a>, class_name: &str) -> Option<JClass<'a>> {
+    if let Ok(class) = env.find_class(&JNIString::new(class_name)) {
         return Some(class);
     }
     let _ = env.exception_clear();
@@ -78,7 +86,7 @@ fn find_class_via_env<'a>(env: &mut JNIEnv<'a>, class_name: &str) -> Option<JCla
 
 /// [`find_class_via_application_class_loader`] loads the given class using the current application
 /// instance's class loader. When the current thread is created on the Rust side and there are no
-/// Java function frames in the current call stack, [`JNIEnv::find_class`] will use the default
+/// Java function frames in the current call stack, [`Env::find_class`] will use the default
 /// system class loader, which can't find classes other than the ones in the Java standard library
 /// or in the Android framework.
 ///
@@ -87,17 +95,19 @@ fn find_class_via_env<'a>(env: &mut JNIEnv<'a>, class_name: &str) -> Option<JCla
 ///
 /// [`Context.getClassLoader`]: https://developer.android.com/reference/android/content/Context#getClassLoader()
 fn find_class_via_application_class_loader<'a>(
-    env: &mut JNIEnv<'a>,
+    env: &mut Env<'a>,
     class_name: &str,
 ) -> Option<JClass<'a>> {
     #[allow(non_snake_case)]
-    let ActivityThread = env.find_class("android/app/ActivityThread").ok()?;
+    let ActivityThread = env
+        .find_class(jni_str!("android/app/ActivityThread"))
+        .ok()?;
 
     let current_activity_thread = env
         .call_static_method(
             ActivityThread,
-            "currentActivityThread",
-            "()Landroid/app/ActivityThread;",
+            jni_str!("currentActivityThread"),
+            jni_sig!("()Landroid/app/ActivityThread;"),
             &[],
         )
         .ok()?
@@ -107,8 +117,8 @@ fn find_class_via_application_class_loader<'a>(
     let application = env
         .call_method(
             current_activity_thread,
-            "getApplication",
-            "()Landroid/app/Application;",
+            jni_str!("getApplication"),
+            jni_sig!("()Landroid/app/Application;"),
             &[],
         )
         .ok()?
@@ -118,26 +128,28 @@ fn find_class_via_application_class_loader<'a>(
     let application_class_loader = env
         .call_method(
             application,
-            "getClassLoader",
-            "()Ljava/lang/ClassLoader;",
+            jni_str!("getClassLoader"),
+            jni_sig!("()Ljava/lang/ClassLoader;"),
             &[],
         )
         .ok()?
         .l()
         .ok()?;
 
-    Some(
-        env.call_method(
+    let class_string = env.new_string(class_name).ok()?.into();
+    let class = JValue::Object(&class_string);
+    let ret = env
+        .call_method(
             application_class_loader,
-            "loadClass",
-            "(Ljava/lang/String;)Ljava/lang/Class;",
-            &[JValue::Object(&env.new_string(class_name).ok()?.into())],
+            jni_str!("loadClass"),
+            jni_sig!("(Ljava/lang/String;)Ljava/lang/Class;"),
+            &[class],
         )
         .ok()?
         .l()
-        .ok()?
-        .into(),
-    )
+        .ok()?;
+
+    JClass::cast_local(env, ret).ok()
 }
 
 unsafe fn get_java_vm_impl() -> Option<*mut JavaVM> {
