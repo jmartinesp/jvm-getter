@@ -26,7 +26,7 @@ to manually handle Java-specific logic for Android. To learn about the strategy 
 also available on Desktop platforms, including Windows, macOS, and Linux.
 
 [`JNI_GetCreatedJavaVMs()`]: https://docs.oracle.com/javase/8/docs/technotes/guides/jni/spec/invocation.html#JNI_GetCreatedJavaVMs
-[`find_jni_get_created_java_vms()`]: ./jvm-getter/src/lib.rs#L42-L60
+[`find_jni_get_created_java_vms()`]: ./jvm-getter/src/lib.rs#L42-60
 
 ## How to use
 
@@ -60,8 +60,7 @@ pub fn vm() -> &'static JavaVM {
             panic!("no JavaVM was found by JNI_GetCreatedJavaVMs");
         }
 
-        let vm = unsafe { JavaVM::from_raw(vm.assume_init()) };
-        vm.expect("JNI_GetCreatedJavaVMs returned nullptr")
+        unsafe { JavaVM::from_raw(vm.assume_init()) }
     })
 }
 ```
