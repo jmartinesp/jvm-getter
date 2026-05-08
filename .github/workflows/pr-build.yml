@@ -12,7 +12,7 @@ jobs:
     strategy:
       matrix:
         profile: [dev, release]
-        rust-version: ["1.73", "1.78", "1.83", "1.88"]
+        rust-version: ["1.76", "1.78", "1.83", "1.88"]
         target:
           # Android Targets
           - aarch64-linux-android
